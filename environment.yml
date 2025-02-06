@@ -1,7 +1,3 @@
-name: SmallScrapper
-channels:
-  - conda-forge
-  - defaults
 dependencies:
   - python=3.11
   - sqlite
@@ -9,3 +5,13 @@ dependencies:
   - matplotlib
   - beautifulsoup4
   - scrapy
+  - scholarly
+  - memory_profiler
+  - httpx=0.27.2
+  - openpyxl
+  - requests  # Extra space removed
+  - tqdm
+  - pip  # Ensure pip itself is installed within the environment
+  - pip:
+    - fake_useragent
+    - googletrans==4.0.0-rc1

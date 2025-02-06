@@ -1,4 +1,6 @@
 import sqlite3
+import pandas as pd
+import openpyxl
 
 def create_database():
     conn = sqlite3.connect("research.db")
@@ -82,6 +84,16 @@ def search_projects(keyword):
     results = cursor.fetchall()
     conn.close()
     return results
+
+def export_to_excel(db_path="research.db", output_file="research_results.xlsx"):
+    conn = sqlite3.connect(db_path)
+    papers_df = pd.read_sql_query("SELECT * FROM papers", conn)
+    projects_df = pd.read_sql_query("SELECT * FROM projects", conn)
+    conn.close()
+    
+    with pd.ExcelWriter(output_file) as writer:
+        papers_df.to_excel(writer, sheet_name="Papers", index=False)
+        projects_df.to_excel(writer, sheet_name="Projects", index=False)
 
 if __name__ == "__main__":
     create_database()
