@@ -1,5 +1,6 @@
 import sqlite3
 import pandas as pd
+import tqdm
 import openpyxl
 
 def create_database():
@@ -94,6 +95,27 @@ def export_to_excel(db_path="research.db", output_file="research_results.xlsx"):
     with pd.ExcelWriter(output_file) as writer:
         papers_df.to_excel(writer, sheet_name="Papers", index=False)
         projects_df.to_excel(writer, sheet_name="Projects", index=False)
+
+
+
+def remove_duplicates_from_db():
+    conn = sqlite3.connect("research.db")  # Change to PostgreSQL connection if needed
+    cursor = conn.cursor()
+    
+    # Deduplication logic: Keep the first occurrence of (title, authors, source)
+    query = """
+    DELETE FROM papers
+    WHERE rowid NOT IN (
+        SELECT MIN(rowid)
+        FROM papers
+        GROUP BY title, authors, source
+    );
+    """
+    
+    cursor.execute(query)
+    conn.commit()
+    conn.close()
+    print("Duplicates removed successfully!")
 
 if __name__ == "__main__":
     create_database()

@@ -2,117 +2,134 @@ import requests
 import re
 import time
 import random
+import json
 import pandas as pd
 from bs4 import BeautifulSoup
-from googletrans import Translator
 from fake_useragent import UserAgent
 from tqdm import tqdm
+from requests.exceptions import ProxyError, ConnectTimeout
 
+BAD_PROXIES_FILE = "bad_proxies.json"
+OUTPUT_FILE = "universities.csv"
+MAX_RETRIES = 5
+
+# Load bad proxies from file
+def load_bad_proxies():
+    try:
+        with open(BAD_PROXIES_FILE, "r") as f:
+            return set(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
+
+# Save bad proxies to file
+def save_bad_proxy(proxy):
+    bad_proxies = load_bad_proxies()
+    bad_proxies.add(proxy)
+    with open(BAD_PROXIES_FILE, "w") as f:
+        json.dump(list(bad_proxies), f, indent=4)
+
+# Get proxies from free sources
 def get_proxies():
     regex = r"[0-9]+(?:\.[0-9]+){3}:[0-9]+"
     try:
         c = requests.get("https://spys.me/proxy.txt", timeout=10)
         proxies = re.findall(regex, c.text)
-        
+
         d = requests.get("https://free-proxy-list.net/", timeout=10)
         soup = BeautifulSoup(d.content, 'html.parser')
-        
+
         for row in soup.select("#proxylisttable tbody tr"):
             cols = row.find_all("td")
             if cols[4].text.strip().lower() == "elite proxy":
                 proxies.append(f"{cols[0].text.strip()}:{cols[1].text.strip()}")
-        
+
+        # Remove bad proxies
+        bad_proxies = load_bad_proxies()
+        proxies = [p for p in proxies if p not in bad_proxies]
+
         return proxies
     except Exception as e:
         print(f"Error fetching proxies: {e}")
         return []
 
 PROXIES = get_proxies()
-print(f"Using {len(PROXIES)} proxies")
+print(f"Using {len(PROXIES)} proxies after filtering bad ones")
 
 ua = UserAgent()
-translator = Translator()
-TRANSLATION_CACHE = {}
 
+# Get a random proxy
 def get_proxy():
-    return {"http": random.choice(PROXIES), "https": random.choice(PROXIES)} if PROXIES else None
+    if not PROXIES:
+        return None
+    proxy = random.choice(PROXIES)
+    return {"http": f"http://{proxy}", "https": f"https://{proxy}"}
 
+# Get all country codes
 def get_country_data():
     try:
-        url = "http://api.geonames.org/countryInfoJSON?username=your_username"
+        url = "http://api.geonames.org/countryInfoJSON?username=miratesting"
         response = requests.get(url, timeout=10).json()
         return {country['countryCode']: country['countryName'] for country in response.get('geonames', [])}
     except Exception as e:
         print(f"Error fetching country data: {e}")
         return {}
 
-def get_country_languages(country_code):
-    try:
-        url = f"https://restcountries.com/v3.1/alpha/{country_code}"
-        response = requests.get(url, timeout=10).json()
-        return list(response[0]["languages"].values()) if isinstance(response, list) and "languages" in response[0] else []
-    except Exception as e:
-        print(f"Error fetching languages for {country_code}: {e}")
-        return []
+# Scrape university names for a country
+def get_universities(country_code, country_name):
+    url = f"https://www.universityguru.com/{country_code}"
+    universities = []
+    headers = {"User-Agent": ua.random}
 
-def translate_university(country_code):
-    if country_code in TRANSLATION_CACHE:
-        return TRANSLATION_CACHE[country_code]
-    
-    languages = get_country_languages(country_code)
-    if not languages:
-        return "University"
-    
-    try:
-        translation = translator.translate("University", dest=languages[0]).text
-        TRANSLATION_CACHE[country_code] = translation
-        return translation
-    except Exception as e:
-        print(f"Translation error for {country_code}: {e}")
-        return "University"
-
-def search_universities(query):
-    search_engines = [
-        f"https://www.google.com/search?q={query}",
-        f"https://www.bing.com/search?q={query}"
-    ]
-    results = []
-    
-    for search_url in search_engines:
+    for retries in range(MAX_RETRIES):
+        proxy = get_proxy()
         try:
-            headers = {"User-Agent": ua.random}
-            proxy = get_proxy()
-            response = requests.get(search_url, headers=headers, proxies=proxy, timeout=10)
+            print(f"Attempting to scrape {country_name} using proxy {proxy['http']}")
+            time.sleep(random.uniform(3, 7))  # Random delay to avoid detection
+            
+            response = requests.get(url, headers=headers, proxies=proxy, timeout=10)
+            if response.status_code == 403:
+                raise ProxyError("403 Forbidden: Blocked by bot detection")
+
             soup = BeautifulSoup(response.text, 'html.parser')
+            uni_list = soup.select("div.university-name a")
+
+            for uni in uni_list:
+                universities.append(uni.text.strip())
+
+            print(f"✅ Scraped {len(universities)} universities from {country_name}")
+            return universities
+
+        except (ProxyError, ConnectTimeout) as e:
+            proxy_address = proxy["http"].split("//")[1]  # Extract proxy address
+            print(f"⚠️ Proxy failed: {proxy_address}. Retrying with a new proxy...")
+
+            # Save bad proxy and remove it from the list
+            save_bad_proxy(proxy_address)
+            if proxy_address in PROXIES:
+                PROXIES.remove(proxy_address)
             
-            for link in soup.find_all("a", href=True):
-                url = link["href"]
-                if "http" in url and not any(bad in url for bad in ["google", "bing", "youtube", "facebook", "wikipedia"]):
-                    results.append(url)
-            
-            time.sleep(random.uniform(3, 7))
+            continue  # Retry with a new proxy
+
         except Exception as e:
-            print(f"Error fetching {search_url}: {e}")
-    
-    return list(set(results))
+            print(f"⚠️ Error scraping {country_name}: {e}")
+            break  # Stop retrying for non-proxy-related issues
 
-def main():
+    return universities
+
+# Main function
+def scrape_all_universities():
     country_data = get_country_data()
-    data = []
-    
-    for country_code, country_name in tqdm(country_data.items(), desc="Processing countries"):
-        translation = translate_university(country_code)
-        search_query = f"{translation} {country_name}"
-        university_links = search_universities(search_query)
-        
-        for link in university_links:
-            data.append([country_name, country_code, translation, link])
-    
-    df = pd.DataFrame(data, columns=["Country", "Country Code", "Translation", "University Website"])
-    df.drop_duplicates(subset=["University Website"], inplace=True)
-    df.to_csv("universities.csv", index=False)
-    
-    print("✅ CSV file created successfully!")
+    all_universities = []
 
+    for country_code, country_name in tqdm(country_data.items(), desc="Scraping universities"):
+        universities = get_universities(country_code.lower(), country_name)
+        for uni in universities:
+            all_universities.append({"Country": country_name, "University": uni})
+
+    df = pd.DataFrame(all_universities)
+    df.to_csv(OUTPUT_FILE, index=False)
+    print(f"Saved {len(df)} universities to {OUTPUT_FILE}")
+
+# Run the scraper
 if __name__ == "__main__":
-    main()
+    scrape_all_universities()
